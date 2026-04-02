@@ -1,0 +1,13 @@
+{
+  "name": "image-gen-evaluator",
+  "version": "1.0.0",
+  "description": "Local model comparison tool for testing image generation models",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "replicate": "^1.0.1"
+  }
+}
