@@ -573,11 +573,12 @@
     <label>Provider</label><br>
     <select id="provider">
       <option value="replicate">Replicate</option>
+      <option value="kie">Kie.ai</option>
     </select>
   </div>
   <div>
-    <label>API Key</label><br>
-    <input type="password" id="apiKey" placeholder="Enter your Replicate API key">
+    <label id="apiKeyLabel">API Key</label><br>
+    <input type="password" id="apiKey" placeholder="r8_…">
   </div>
   <div class="top-bar-right">
     <button class="btn-secondary" id="loadSessionBtn" style="padding:6px 14px;font-size:13px;">Load Last Session</button>
@@ -683,14 +684,10 @@
     "Photorealistic quality",
   ];
 
-  const DEFAULT_SELECTED = [
-    "google/nano-banana-pro",
-    "bytedance/seedream-4.5",
-    "bytedance/seedream-5-lite",
-    "black-forest-labs/flux-2-max",
-    "black-forest-labs/flux-2-pro",
-  ];
+  let DEFAULT_SELECTED = {};
 
+  const providerSelect = document.getElementById("provider");
+  const apiKeyLabel = document.getElementById("apiKeyLabel");
   const apiKeyInput = document.getElementById("apiKey");
   const promptInput = document.getElementById("prompt");
   const aspectRatioSelect = document.getElementById("aspectRatio");
@@ -794,15 +791,35 @@
 
   async function loadModels() {
     const res = await fetch("/api/models");
-    models = await res.json();
+    const data = await res.json();
+    models = data.models;
+    DEFAULT_SELECTED = data.defaultSelected;
     renderModelCheckboxes();
     updateRunBtn();
   }
 
+  const KEY_META = {
+    replicate: { label: "Replicate API Key", placeholder: "r8_…" },
+    kie:       { label: "Kie.ai API Key",    placeholder: "kie_…" },
+  };
+
+  function updateApiKeyField() {
+    const meta = KEY_META[providerSelect.value];
+    apiKeyLabel.textContent = meta.label;
+    apiKeyInput.placeholder = meta.placeholder;
+    apiKeyInput.value = "";
+  }
+
+  providerSelect.addEventListener("change", () => {
+    updateApiKeyField();
+    renderModelCheckboxes();
+    updateRunBtn();
+  });
+
   function renderModelCheckboxes() {
     modelCheckboxesDiv.innerHTML = "";
     const grouped = {};
-    models.forEach(m => {
+    models.filter(m => m.platform === providerSelect.value).forEach(m => {
       if (!grouped[m.provider]) grouped[m.provider] = [];
       grouped[m.provider].push(m);
     });
@@ -827,11 +844,12 @@
       providerModels.forEach(m => {
         const label = document.createElement("label");
         label.className = "model-checkbox";
-        const checked = DEFAULT_SELECTED.includes(m.id) ? "checked" : "";
+        const defaults = DEFAULT_SELECTED[providerSelect.value] || [];
+        const checked = defaults.includes(m.id) ? "checked" : "";
         label.innerHTML = `
           <input type="checkbox" value="${m.id}" ${checked}>
           <span class="model-label">${m.label}</span>
-          <span class="model-price">${m.priceEst}</span>
+          ${m.priceEst && m.priceEst !== "N/A" ? `<span class="model-price">${m.priceEst}</span>` : ""}
         `;
         modelsDiv.appendChild(label);
       });
@@ -982,14 +1000,16 @@
   }
 
   runBtn.addEventListener("click", async () => {
-    const apiKey = apiKeyInput.value.trim();
+    const isKieProvider = providerSelect.value === "kie";
+    const apiKey = isKieProvider ? "" : apiKeyInput.value.trim();
+    const kieApiKey = isKieProvider ? apiKeyInput.value.trim() : "";
     const prompt = promptInput.value.trim();
     const modelIds = getSelectedModels();
     const aspectRatio = aspectRatioSelect.value;
     const runsPerModel = parseInt(runsPerModelInput.value) || 1;
     const resolution = resolutionSelect.value;
 
-    if (!apiKey || !prompt || !modelIds.length) return;
+    if (!prompt || !modelIds.length) return;
 
     running = true;
     updateRunBtn();
@@ -1026,7 +1046,7 @@
       const res = await fetch("/api/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ apiKey, modelIds, prompt, aspectRatio, runsPerModel, resolution, images: uploadedImages.length > 0 ? uploadedImages : undefined }),
+        body: JSON.stringify({ apiKey, kieApiKey, modelIds, prompt, aspectRatio, runsPerModel, resolution, images: uploadedImages.length > 0 ? uploadedImages : undefined }),
       });
 
       const reader = res.body.getReader();

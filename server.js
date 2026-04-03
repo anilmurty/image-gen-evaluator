@@ -1,92 +1,42 @@
 const express = require("express");
-const Replicate = require("replicate");
 const path = require("path");
+
+const replicate = require("./providers/replicate");
+const kie = require("./providers/kie");
 
 const app = express();
 app.use(express.json({ limit: "50mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
-const MODELS = [
-  // Google
-  { id: "google/nano-banana-pro", label: "Nano Banana Pro", provider: "Google", priceEst: "$0.04", supportsImages: true, imageParam: "image_input" },
-  { id: "google/imagen-4", label: "Imagen 4", provider: "Google", priceEst: "$0.03" },
-  { id: "google/imagen-4-fast", label: "Imagen 4 Fast", provider: "Google", priceEst: "$0.02" },
-  // ByteDance
-  { id: "bytedance/seedream-4.5", label: "Seedream 4.5", provider: "ByteDance", priceEst: "$0.03", supportsImages: true, imageParam: "image_input" },
-  { id: "bytedance/seedream-5-lite", label: "Seedream 5.0 Lite", provider: "ByteDance", priceEst: "$0.03", supportsImages: true, imageParam: "image_input" },
-  // Black Forest Labs
-  { id: "black-forest-labs/flux-2-max", label: "Flux-2-Max", provider: "Black Forest Labs", priceEst: "$0.05", supportsImages: true, imageParam: "input_images" },
-  { id: "black-forest-labs/flux-2-pro", label: "Flux-2-Pro", provider: "Black Forest Labs", priceEst: "$0.03", supportsImages: true, imageParam: "input_images" },
-  { id: "black-forest-labs/flux-kontext-pro", label: "Flux Kontext Pro", provider: "Black Forest Labs", priceEst: "$0.04", supportsImages: true, imageParam: "input_image", singleImage: true },
-  // Ideogram (only supports inpainting with mask, not general image input)
-  { id: "ideogram-ai/ideogram-v3-quality", label: "Ideogram v3 Quality", provider: "Ideogram", priceEst: "$0.06" },
-  { id: "ideogram-ai/ideogram-v3-turbo", label: "Ideogram v3 Turbo", provider: "Ideogram", priceEst: "$0.03" },
-  // OpenAI (separate key)
-  { id: "openai/gpt-image-1.5", label: "GPT Image 1.5", provider: "OpenAI", priceEst: "$0.04–0.12", requiresSeparateKey: true, supportsImages: true, imageParam: "input_images" },
-  // Recraft
-  { id: "recraft-ai/recraft-v4", label: "Recraft V4", provider: "Recraft", priceEst: "$0.04" },
-  // Alibaba
-  { id: "alibaba/wan-2.1-t2i", label: "Wan 2.1 T2I", provider: "Alibaba", priceEst: "$0.03" },
-];
+// ─── Provider registry ────────────────────────────────────────────────────────
+// To add a new provider: create providers/<name>.js exporting { models, run }
+// and add it here. Nothing else needs to change.
+const PROVIDERS = { replicate, kie };
 
-// Map user-selected aspect ratio to what each model actually supports.
-// Models not listed here accept the standard ratios fine.
-const ASPECT_RATIO_MAP = {
-  "openai/gpt-image-1.5": {
-    "9:16": "2:3",
-    "16:9": "3:2",
-    "1:1": "1:1",
-    "3:4": "2:3",
-  },
-};
+const MODELS = Object.values(PROVIDERS).flatMap(p => p.models);
+const DEFAULT_SELECTED = Object.fromEntries(
+  Object.entries(PROVIDERS).map(([key, p]) => [key, p.defaultSelected || []])
+);
 
 app.get("/api/models", (req, res) => {
-  res.json(MODELS);
+  res.json({ models: MODELS, defaultSelected: DEFAULT_SELECTED });
 });
 
-// Extract a usable image URL from various Replicate output formats
-function extractImageUrl(output) {
-  // String URL
-  if (typeof output === "string") {
-    if (output.startsWith("http")) return output;
-    // Could be a data URI
-    if (output.startsWith("data:image")) return output;
-  }
-
-  // FileOutput object (has .url() or is URL-like when cast to string)
-  if (output && typeof output === "object" && !Array.isArray(output)) {
-    if (typeof output.url === "function") return output.url();
-    if (typeof output.url === "string") return output.url;
-    if (typeof output.href === "string") return output.href;
-    // Some FileOutput objects stringify to a URL
-    const str = String(output);
-    if (str.startsWith("http")) return str;
-  }
-
-  // Array of outputs — take the first image
-  if (Array.isArray(output)) {
-    for (const item of output) {
-      const url = extractImageUrl(item);
-      if (url) return url;
-    }
-  }
-
-  // Iterator/generator result (some models return async iterables that have already been collected)
-  if (output && typeof output[Symbol.iterator] === "function" && !Array.isArray(output)) {
-    for (const item of output) {
-      const url = extractImageUrl(item);
-      if (url) return url;
-    }
-  }
-
-  return null;
-}
-
+// ─── Run endpoint ─────────────────────────────────────────────────────────────
 app.post("/api/run", (req, res) => {
-  const { apiKey, modelIds, prompt, aspectRatio, runsPerModel, resolution, images } = req.body;
+  const { apiKey, kieApiKey, modelIds, prompt, aspectRatio, runsPerModel, resolution, images } = req.body;
 
-  if (!apiKey || !modelIds?.length || !prompt) {
+  if (!modelIds?.length || !prompt) {
     return res.status(400).json({ error: "Missing required fields" });
+  }
+
+  // Validate that the right API keys are present for the selected models
+  const keyByPlatform = { replicate: apiKey, kie: kieApiKey };
+  for (const id of modelIds) {
+    const model = MODELS.find(m => m.id === id);
+    if (model && !keyByPlatform[model.platform]) {
+      return res.status(400).json({ error: `API key required for platform: ${model.platform}` });
+    }
   }
 
   res.writeHead(200, {
@@ -94,93 +44,54 @@ app.post("/api/run", (req, res) => {
     "Cache-Control": "no-cache",
     Connection: "keep-alive",
   });
-
-  // Send a keepalive comment immediately so the connection is established
   res.write(":ok\n\n");
 
-  const replicate = new Replicate({ auth: apiKey });
   const runs = Math.min(Math.max(parseInt(runsPerModel) || 1, 1), 5);
-  const hasImages = Array.isArray(images) && images.length > 0;
   const MAX_RETRIES = 1;
-  const TIMEOUT_MS = 180000; // 3 minutes per model
+  const TIMEOUT_MS = 180000; // 3 minutes
 
   function sendEvent(data) {
-    try {
-      res.write(`data: ${JSON.stringify(data)}\n\n`);
-    } catch (e) {
-      console.error("Failed to write SSE event:", e.message);
-    }
+    try { res.write(`data: ${JSON.stringify(data)}\n\n`); } catch (_) {}
   }
 
   async function runModel(modelId, runIndex) {
-    const model = MODELS.find((m) => m.id === modelId);
-    const modelSupportsImages = hasImages && model?.supportsImages;
+    const model = MODELS.find(m => m.id === modelId);
+    const provider = PROVIDERS[model?.platform];
     let lastError = null;
 
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       const startTime = Date.now();
       try {
-        const modelAspect = ASPECT_RATIO_MAP[modelId]?.[aspectRatio] || aspectRatio || "9:16";
+        if (!provider) throw new Error(`Unknown platform: ${model?.platform}`);
 
-        const input = {
-          prompt,
-          aspect_ratio: modelAspect,
-        };
-
-        if (resolution === "high") {
-          input.output_quality = 100;
-        }
-        if (modelSupportsImages) {
-          const paramName = model.imageParam || "input_images";
-          if (model.singleImage) {
-            // Model accepts a single image URI, not an array
-            input[paramName] = images[0];
-          } else {
-            input[paramName] = images;
-          }
-        }
-
-        // Run with timeout
-        const output = await Promise.race([
-          replicate.run(modelId, { input }),
-          new Promise((_, reject) =>
-            setTimeout(() => reject(new Error("Timed out after 3 minutes")), TIMEOUT_MS)
-          ),
-        ]);
+        const apiKeyForModel = keyByPlatform[model.platform];
+        const imageUrl = await provider.run(
+          model,
+          { prompt, aspectRatio, resolution, images },
+          apiKeyForModel,
+          TIMEOUT_MS,
+        );
 
         const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-
-        console.log(`[${model?.label}] run ${runIndex} attempt ${attempt} output type: ${typeof output}, isArray: ${Array.isArray(output)}, value: ${String(output).slice(0, 200)}`);
-
-        const imageUrl = extractImageUrl(output);
-
-        if (!imageUrl) {
-          throw new Error("No image content found in response");
-        }
-
+        const hasImages = Array.isArray(images) && images.length > 0;
         sendEvent({
           type: "result",
           modelId,
           runIndex,
-          label: model?.label || modelId,
-          priceEst: model?.priceEst || "N/A",
+          label: model.label,
+          priceEst: model.priceEst,
           elapsed,
           imageUrl,
-          inputMode: modelSupportsImages ? "img+text" : "text",
+          inputMode: hasImages && model.supportsImages ? "img+text" : "text",
         });
-        return; // success, no retry needed
+        return;
 
       } catch (err) {
         const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
         lastError = err;
         console.error(`[${model?.label}] run ${runIndex} attempt ${attempt} failed (${elapsed}s): ${err.message}`);
+        if (attempt < MAX_RETRIES) continue;
 
-        if (attempt < MAX_RETRIES) {
-          console.log(`[${model?.label}] retrying...`);
-          continue;
-        }
-
-        // Final failure — send error event
         sendEvent({
           type: "error",
           modelId,
@@ -189,7 +100,7 @@ app.post("/api/run", (req, res) => {
           priceEst: model?.priceEst || "N/A",
           elapsed,
           error: lastError.message || "Unknown error",
-          inputMode: modelSupportsImages ? "img+text" : "text",
+          inputMode: "text",
         });
       }
     }
@@ -208,7 +119,26 @@ app.post("/api/run", (req, res) => {
   });
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Server running at http://localhost:${PORT}`);
+const net = require("net");
+
+function findAvailablePort(startPort) {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.listen(startPort, () => {
+      const { port } = server.address();
+      server.close(() => resolve(port));
+    });
+    server.on("error", () => resolve(findAvailablePort(startPort + 1)));
+  });
+}
+
+const PREFERRED_PORT = parseInt(process.env.PORT) || 3000;
+findAvailablePort(PREFERRED_PORT).then((port) => {
+  app.listen(port, () => {
+    if (port !== PREFERRED_PORT) {
+      console.log(`Port ${PREFERRED_PORT} in use — started on http://localhost:${port}`);
+    } else {
+      console.log(`Server running at http://localhost:${port}`);
+    }
+  });
 });
