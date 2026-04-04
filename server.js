@@ -27,6 +27,9 @@ const MODELS = [
   { id: "recraft-ai/recraft-v4", label: "Recraft V4", provider: "Recraft", priceEst: "$0.04" },
   // Alibaba
   { id: "alibaba/wan-2.1-t2i", label: "Wan 2.1 T2I", provider: "Alibaba", priceEst: "$0.03" },
+  // xAI (separate key — direct API, not Replicate)
+  { id: "xai/grok-imagine-image", label: "Grok Imagine", provider: "xAI", priceEst: "$0.02", requiresSeparateKey: true, apiProvider: "xai", supportsImages: true },
+  { id: "xai/grok-imagine-image-pro", label: "Grok Imagine Pro", provider: "xAI", priceEst: "$0.07", requiresSeparateKey: true, apiProvider: "xai", supportsImages: true },
 ];
 
 // Map user-selected aspect ratio to what each model actually supports.
@@ -39,6 +42,61 @@ const ASPECT_RATIO_MAP = {
     "3:4": "2:3",
   },
 };
+
+// Call the xAI image generation API directly
+async function runXaiModel(modelId, prompt, aspectRatio, resolution, xaiApiKey, images) {
+  const xaiModel = modelId.replace("xai/", ""); // e.g. "grok-imagine-image"
+
+  const body = {
+    model: xaiModel,
+    prompt,
+    n: 1,
+  };
+
+  if (aspectRatio) {
+    body.aspect_ratio = aspectRatio;
+  }
+  if (resolution === "high") {
+    body.resolution = "2k";
+  }
+
+  // Image editing uses a different endpoint
+  const hasImages = Array.isArray(images) && images.length > 0;
+  const endpoint = hasImages
+    ? "https://api.x.ai/v1/images/edits"
+    : "https://api.x.ai/v1/images/generations";
+
+  if (hasImages) {
+    // xAI editing endpoint expects { image: { url: "data:..." } }
+    body.image = { url: images[0] };
+  }
+
+  console.log(`[xAI] Calling ${endpoint} with model=${xaiModel}, aspect_ratio=${body.aspect_ratio || 'default'}`);
+
+  const res = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${xaiApiKey}`,
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const errBody = await res.text();
+    console.error(`[xAI] Error response: ${res.status} ${errBody}`);
+    throw new Error(`xAI API error ${res.status}: ${errBody}`);
+  }
+
+  const json = await res.json();
+  console.log(`[xAI] Success, got ${json.data?.length || 0} image(s)`);
+  // OpenAI-compatible response: { data: [{ url: "..." }] }
+  const imageUrl = json.data?.[0]?.url || json.data?.[0]?.b64_json;
+  if (!imageUrl) {
+    throw new Error("No image URL in xAI response");
+  }
+  return imageUrl;
+}
 
 app.get("/api/models", (req, res) => {
   res.json(MODELS);
@@ -83,9 +141,9 @@ function extractImageUrl(output) {
 }
 
 app.post("/api/run", (req, res) => {
-  const { apiKey, modelIds, prompt, aspectRatio, runsPerModel, resolution, images } = req.body;
+  const { apiKey, xaiApiKey, modelIds, prompt, aspectRatio, runsPerModel, resolution, images } = req.body;
 
-  if (!apiKey || !modelIds?.length || !prompt) {
+  if ((!apiKey && !xaiApiKey) || !modelIds?.length || !prompt) {
     return res.status(400).json({ error: "Missing required fields" });
   }
 
@@ -98,7 +156,7 @@ app.post("/api/run", (req, res) => {
   // Send a keepalive comment immediately so the connection is established
   res.write(":ok\n\n");
 
-  const replicate = new Replicate({ auth: apiKey });
+  const replicate = apiKey ? new Replicate({ auth: apiKey }) : null;
   const runs = Math.min(Math.max(parseInt(runsPerModel) || 1, 1), 5);
   const hasImages = Array.isArray(images) && images.length > 0;
   const MAX_RETRIES = 1;
@@ -115,44 +173,58 @@ app.post("/api/run", (req, res) => {
   async function runModel(modelId, runIndex) {
     const model = MODELS.find((m) => m.id === modelId);
     const modelSupportsImages = hasImages && model?.supportsImages;
+    const isXai = model?.apiProvider === "xai";
     let lastError = null;
 
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       const startTime = Date.now();
       try {
-        const modelAspect = ASPECT_RATIO_MAP[modelId]?.[aspectRatio] || aspectRatio || "9:16";
+        let imageUrl;
 
-        const input = {
-          prompt,
-          aspect_ratio: modelAspect,
-        };
+        if (isXai) {
+          // Direct xAI API call
+          if (!xaiApiKey) throw new Error("xAI API key required for Grok models");
+          const modelAspect = aspectRatio || "9:16";
+          imageUrl = await Promise.race([
+            runXaiModel(modelId, prompt, modelAspect, resolution, xaiApiKey, modelSupportsImages ? images : null),
+            new Promise((_, reject) =>
+              setTimeout(() => reject(new Error("Timed out after 3 minutes")), TIMEOUT_MS)
+            ),
+          ]);
+        } else {
+          // Replicate API call
+          const modelAspect = ASPECT_RATIO_MAP[modelId]?.[aspectRatio] || aspectRatio || "9:16";
 
-        if (resolution === "high") {
-          input.output_quality = 100;
-        }
-        if (modelSupportsImages) {
-          const paramName = model.imageParam || "input_images";
-          if (model.singleImage) {
-            // Model accepts a single image URI, not an array
-            input[paramName] = images[0];
-          } else {
-            input[paramName] = images;
+          const input = {
+            prompt,
+            aspect_ratio: modelAspect,
+          };
+
+          if (resolution === "high") {
+            input.output_quality = 100;
           }
-        }
+          if (modelSupportsImages) {
+            const paramName = model.imageParam || "input_images";
+            if (model.singleImage) {
+              input[paramName] = images[0];
+            } else {
+              input[paramName] = images;
+            }
+          }
 
-        // Run with timeout
-        const output = await Promise.race([
-          replicate.run(modelId, { input }),
-          new Promise((_, reject) =>
-            setTimeout(() => reject(new Error("Timed out after 3 minutes")), TIMEOUT_MS)
-          ),
-        ]);
+          const output = await Promise.race([
+            replicate.run(modelId, { input }),
+            new Promise((_, reject) =>
+              setTimeout(() => reject(new Error("Timed out after 3 minutes")), TIMEOUT_MS)
+            ),
+          ]);
+
+          console.log(`[${model?.label}] run ${runIndex} attempt ${attempt} output type: ${typeof output}, isArray: ${Array.isArray(output)}, value: ${String(output).slice(0, 200)}`);
+
+          imageUrl = extractImageUrl(output);
+        }
 
         const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-
-        console.log(`[${model?.label}] run ${runIndex} attempt ${attempt} output type: ${typeof output}, isArray: ${Array.isArray(output)}, value: ${String(output).slice(0, 200)}`);
-
-        const imageUrl = extractImageUrl(output);
 
         if (!imageUrl) {
           throw new Error("No image content found in response");

@@ -573,11 +573,12 @@
     <label>Provider</label><br>
     <select id="provider">
       <option value="replicate">Replicate</option>
+      <option value="xai">xAI</option>
     </select>
   </div>
   <div>
     <label>API Key</label><br>
-    <input type="password" id="apiKey" placeholder="Enter your Replicate API key">
+    <input type="password" id="apiKey" placeholder="Enter your Replicate API key" autocomplete="off" data-1p-ignore data-lpignore="true">
   </div>
   <div class="top-bar-right">
     <button class="btn-secondary" id="loadSessionBtn" style="padding:6px 14px;font-size:13px;">Load Last Session</button>
@@ -692,6 +693,7 @@
   ];
 
   const apiKeyInput = document.getElementById("apiKey");
+  const providerSelect = document.getElementById("provider");
   const promptInput = document.getElementById("prompt");
   const aspectRatioSelect = document.getElementById("aspectRatio");
   const runsPerModelInput = document.getElementById("runsPerModel");
@@ -727,6 +729,7 @@
   let lightboxIndex = -1;
   let totalCost = 0;
   let uploadedImages = []; // base64 data URIs
+  const apiKeys = { replicate: "", xai: "" }; // remember keys per provider
 
   // Reference images upload
   refToggle.addEventListener("click", () => {
@@ -781,6 +784,35 @@
     setTimeout(() => copyPromptBtn.textContent = "Copy", 1500);
   });
 
+  // Provider switching
+  const PROVIDER_PLACEHOLDERS = {
+    replicate: "Enter your Replicate API key",
+    xai: "Enter your xAI API key",
+  };
+
+  function getSelectedProvider() {
+    return providerSelect.value;
+  }
+
+  function isXaiProvider() {
+    return getSelectedProvider() === "xai";
+  }
+
+  providerSelect.addEventListener("change", () => {
+    // Save current key before switching
+    const prev = apiKeys.replicate !== undefined ? (isXaiProvider() ? "replicate" : "xai") : null;
+    // Actually, save the key we're leaving
+    const newProvider = getSelectedProvider();
+    const oldProvider = newProvider === "xai" ? "replicate" : "xai";
+    apiKeys[oldProvider] = apiKeyInput.value.trim();
+
+    // Restore saved key for new provider
+    apiKeyInput.value = apiKeys[newProvider] || "";
+    apiKeyInput.placeholder = PROVIDER_PLACEHOLDERS[newProvider];
+    renderModelCheckboxes();
+    updateRunBtn();
+  });
+
   // Select all / none
   selectAllBtn.addEventListener("click", () => {
     modelCheckboxesDiv.querySelectorAll("input[type=checkbox]").forEach(cb => cb.checked = true);
@@ -801,8 +833,10 @@
 
   function renderModelCheckboxes() {
     modelCheckboxesDiv.innerHTML = "";
+    const xai = isXaiProvider();
+    const filtered = models.filter(m => xai ? m.apiProvider === "xai" : m.apiProvider !== "xai");
     const grouped = {};
-    models.forEach(m => {
+    filtered.forEach(m => {
       if (!grouped[m.provider]) grouped[m.provider] = [];
       grouped[m.provider].push(m);
     });
@@ -827,7 +861,7 @@
       providerModels.forEach(m => {
         const label = document.createElement("label");
         label.className = "model-checkbox";
-        const checked = DEFAULT_SELECTED.includes(m.id) ? "checked" : "";
+        const checked = (xai || DEFAULT_SELECTED.includes(m.id)) ? "checked" : "";
         label.innerHTML = `
           <input type="checkbox" value="${m.id}" ${checked}>
           <span class="model-label">${m.label}</span>
@@ -1026,7 +1060,12 @@
       const res = await fetch("/api/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ apiKey, modelIds, prompt, aspectRatio, runsPerModel, resolution, images: uploadedImages.length > 0 ? uploadedImages : undefined }),
+        body: JSON.stringify({
+          apiKey: isXaiProvider() ? undefined : apiKey,
+          xaiApiKey: isXaiProvider() ? apiKey : undefined,
+          modelIds, prompt, aspectRatio, runsPerModel, resolution,
+          images: uploadedImages.length > 0 ? uploadedImages : undefined,
+        }),
       });
 
       const reader = res.body.getReader();
