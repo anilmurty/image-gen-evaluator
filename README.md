@@ -23,7 +23,7 @@ PORT=8080 node server.js
 
 ## How It Works
 
-1. Enter your Replicate API key (and optionally an OpenAI key for GPT Image 1.5)
+1. Select a provider (Replicate or xAI) and enter your API key
 2. Write a text prompt (a default test prompt is pre-filled)
 3. Select which models to run
 4. Optionally attach reference images for models that support image editing
@@ -35,8 +35,8 @@ PORT=8080 node server.js
 
 | Option | Description | Default |
 |---|---|---|
-| **Provider** | API provider (Replicate) | Replicate |
-| **API Key** | Replicate API token (required) | -- |
+| **Provider** | API provider (Replicate or xAI) | Replicate |
+| **API Key** | Replicate or xAI API token (required) | -- |
 | **Prompt** | Text description of the image to generate | Pre-filled test prompt |
 | **Aspect Ratio** | Output image aspect ratio | 9:16 |
 | **Resolution** | Standard or high quality | Standard |
@@ -45,7 +45,9 @@ PORT=8080 node server.js
 
 ## Supported Models
 
-### Text-to-Image Only
+### Replicate Provider
+
+#### Text-to-Image Only
 
 | Model | Replicate ID | Provider | Est. Cost | Notes |
 |---|---|---|---|---|
@@ -56,7 +58,7 @@ PORT=8080 node server.js
 | Recraft V4 | `recraft-ai/recraft-v4` | Recraft | $0.04 | |
 | Wan 2.1 T2I | `alibaba/wan-2.1-t2i` | Alibaba | $0.03 | |
 
-### Text-to-Image + Image Editing
+#### Text-to-Image + Image Editing
 
 These models accept reference/input images when provided. The API parameter name varies per model.
 
@@ -71,6 +73,17 @@ These models accept reference/input images when provided. The API parameter name
 | GPT Image 1.5 | `openai/gpt-image-1.5` | OpenAI | $0.04-0.12 | `input_images` | Array of URIs | -- |
 
 > GPT Image 1.5 requires a separate OpenAI API key entered in the UI.
+
+### xAI Provider
+
+These models use the xAI API directly (not Replicate) and require an xAI API key.
+
+| Model | Model ID | Est. Cost | Image Editing |
+|---|---|---|---|
+| Grok Imagine | `grok-imagine-image` | $0.02 | Yes (up to 5 images) |
+| Grok Imagine Pro | `grok-imagine-image-pro` | $0.07 | Yes (up to 5 images) |
+
+xAI image editing uses the `/v1/images/edits` endpoint. Single images are sent as `image: { url }`, multiple images as `images: [{ url }, ...]`.
 
 ### Aspect Ratio Mapping
 
@@ -105,7 +118,7 @@ Add an entry to the `MODELS` array in `server.js`:
 
 ```js
 {
-  id: "owner/model-name",        // Replicate model ID
+  id: "owner/model-name",        // Replicate model ID (or "xai/model-name" for xAI)
   label: "Display Name",         // Shown in the UI
   provider: "Provider Name",     // Grouping label
   priceEst: "$0.03",             // Approximate cost per generation
@@ -113,6 +126,7 @@ Add an entry to the `MODELS` array in `server.js`:
   imageParam: "input_images",    // Optional: API parameter name for images
   singleImage: true,             // Optional: true if model takes a single URI, not an array
   requiresSeparateKey: true,     // Optional: true if model needs its own API key
+  apiProvider: "xai",            // Optional: "xai" for direct API (not Replicate)
 }
 ```
 
