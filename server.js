@@ -67,8 +67,12 @@ async function runXaiModel(modelId, prompt, aspectRatio, resolution, xaiApiKey, 
     : "https://api.x.ai/v1/images/generations";
 
   if (hasImages) {
-    // xAI editing endpoint expects { image: { url: "data:..." } }
-    body.image = { url: images[0] };
+    if (images.length === 1) {
+      body.image = { url: images[0] };
+    } else {
+      // Multiple images: use "images" array (up to 5)
+      body.images = images.map(img => ({ url: img }));
+    }
   }
 
   console.log(`[xAI] Calling ${endpoint} with model=${xaiModel}, aspect_ratio=${body.aspect_ratio || 'default'}`);
