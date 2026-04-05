@@ -6,6 +6,9 @@ All API calls are made server-side. API keys are held in memory only and never p
 
 ![Screenshot](public/screenshot.png)
 
+# Why?
+While building https://www.twinklebot.app/ I found out the hard way that you can either have good model performance (from the model maker) or good scaling (from the provider) but not both (apparently -- but feel free to change my mind!). For example, google nanobanana-pro offers amazing character consistency, editing and styling but none of the providers (replicate, fal.ai or even google AI studio) are able to offer the service without rate limits and timeouts. Meanwhile, all the 3rd party providers offer amazing service for the open source models (like SDXL2) but they suck at editing. I'm trying to build a tool that finds out the best tradeoff betwen the two things
+
 ## Quick Start
 
 ```bash
